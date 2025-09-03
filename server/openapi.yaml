@@ -1,0 +1,41 @@
+openapi: 3.0.3
+info:
+title: RAG QA API
+version: 1.0.0
+description: REST API for ingesting PDFs and asking questions over the vector index.
+servers:
+- url: http://localhost:5050
+paths:
+/api/ingest:
+post:
+summary: Ingest and index uploaded PDF files
+requestBody:
+required: true
+content:
+multipart/form-data:
+schema:
+type: object
+properties:
+files:
+type: array
+items:
+type: string
+format: binary
+responses:
+'200':
+description: Ingestion summary
+content:
+application/json:
+schema:
+type: object
+properties:
+addedChunks:
+type: integer
+documents:
+type: array
+items:
+type: object
+properties:
+filename: { type: string }
+chunks: { type: integer }
+excerpt: { type: string }
