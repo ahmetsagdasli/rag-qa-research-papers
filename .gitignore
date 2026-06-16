@@ -13,6 +13,10 @@ build/
 
 # Data and uploads
 server/data/
+/data/
+*.db
+*.db-wal
+*.db-shm
 *.pdf
 
 # OS generated files

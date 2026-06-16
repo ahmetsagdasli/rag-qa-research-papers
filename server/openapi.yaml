@@ -1,41 +1,232 @@
 openapi: 3.0.3
 info:
-title: RAG QA API
-version: 1.0.0
-description: REST API for ingesting PDFs and asking questions over the vector index.
+  title: RAG QA API
+  version: 1.0.0
+  description: >
+    REST API for uploading PDF research papers, building a vector index over
+    their contents, and asking questions answered from the indexed sources.
 servers:
-- url: http://localhost:5050
+  - url: http://localhost:5050
+
 paths:
-/api/ingest:
-post:
-summary: Ingest and index uploaded PDF files
-requestBody:
-required: true
-content:
-multipart/form-data:
-schema:
-type: object
-properties:
-files:
-type: array
-items:
-type: string
-format: binary
-responses:
-'200':
-description: Ingestion summary
-content:
-application/json:
-schema:
-type: object
-properties:
-addedChunks:
-type: integer
-documents:
-type: array
-items:
-type: object
-properties:
-filename: { type: string }
-chunks: { type: integer }
-excerpt: { type: string }
+  /health:
+    get:
+      summary: Health check
+      responses:
+        '200':
+          description: Server is up
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                    example: true
+
+  /api/upload:
+    post:
+      summary: Upload a single PDF file
+      description: >
+        Stores the uploaded PDF under `server/data`. Only PDF files are accepted.
+        Call `/api/rebuild-index` afterwards to (re)build the vector index.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file:
+                  type: string
+                  format: binary
+              required:
+                - file
+      responses:
+        '200':
+          description: Upload result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  file: { type: string, example: my_paper.pdf }
+                  path: { type: string, example: server/data/my_paper.pdf }
+        '400':
+          description: No file uploaded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Error during upload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/rebuild-index:
+    post:
+      summary: Rebuild the vector index
+      description: >
+        Parses every PDF in `server/data`, chunks the text, generates embeddings
+        and writes the vector store to `server/data/index.json`. Poll
+        `/api/progress` while this runs to track progress.
+      responses:
+        '200':
+          description: Index rebuilt
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  totalChunks:
+                    type: integer
+                    description: Total number of chunks in the rebuilt index
+                    example: 142
+        '500':
+          description: Error occurred during ingestion
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/progress:
+    get:
+      summary: Get current ingestion progress
+      description: Returns the latest progress reported by `/api/rebuild-index`.
+      responses:
+        '200':
+          description: Current progress
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  step:
+                    type: string
+                    example: Generating embeddings for my_paper.pdf...
+                  progress:
+                    type: integer
+                    description: Percentage from 0 to 100
+                    example: 75
+
+  /api/papers:
+    get:
+      summary: List indexed documents
+      description: >
+        Returns the documents currently present in the vector index. Used by the
+        frontend to restore the document list after a page reload.
+      responses:
+        '200':
+          description: Indexed documents
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  documents:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Document'
+        '500':
+          description: Could not list papers
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/ask:
+    post:
+      summary: Ask a question over the indexed documents
+      description: >
+        Embeds the question, retrieves the top-K most similar chunks via cosine
+        similarity, and generates an answer grounded in those sources.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                question:
+                  type: string
+                  example: What problem does this paper address?
+                topK:
+                  type: integer
+                  description: Number of chunks to retrieve as context
+                  default: 4
+                  example: 4
+              required:
+                - question
+      responses:
+        '200':
+          description: Answer with cited sources
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean, example: true }
+                  answer:
+                    type: string
+                    description: The generated answer
+                  sources:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Source'
+        '400':
+          description: question is required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: Error occurred during ask operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+components:
+  schemas:
+    Error:
+      type: object
+      properties:
+        ok:
+          type: boolean
+          example: false
+        error:
+          type: string
+
+    Document:
+      type: object
+      properties:
+        filename: { type: string, example: my_paper.pdf }
+        chunks: { type: integer, example: 42 }
+        size:
+          type: integer
+          description: File size in bytes
+          example: 248213
+        updatedAt:
+          type: string
+          format: date-time
+
+    Source:
+      type: object
+      properties:
+        id: { type: string, example: 'my_paper::3' }
+        docId: { type: string, example: my_paper }
+        chunkIndex: { type: integer, example: 3 }
+        source: { type: string, example: my_paper.pdf }
+        score:
+          type: number
+          format: float
+          description: Cosine similarity score
+          example: 0.8123
+        preview:
+          type: string
+          description: First 300 characters of the matched chunk

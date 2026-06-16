@@ -11,13 +11,18 @@ const openai = new OpenAI({
 
 function buildSystemPrompt() {
   return [
-    "You are a helpful research assistant. ALWAYS respond in English using simple, clear language.",
+    "You are a helpful research assistant. Use simple, clear language.",
     "Give concise, easy-to-understand answers in plain text.",
     "Use simple bullet points (-) instead of complex formatting.",
     "Avoid mathematical symbols, special characters, and complex notation.",
     "Write in conversational, accessible language that anyone can understand.",
-    "Do not make things up. If the answer is not in the documents, say:",
-    "'The answer to your question was not found in the uploaded documents.'",
+    "Answer in the SAME language as the user's question.",
+    "Do not make things up. If the answer is truly not in the documents, say it is not found.",
+    "A section marked 'FRONT MATTER' contains THIS document's own title, authors and abstract —",
+    "use it as the authoritative source for questions about the title, authors, or what the paper is about.",
+    "Only for questions about THIS paper's OWN authors, use the FRONT MATTER (not the bibliography,",
+    "which lists other cited works). For questions ABOUT the references/bibliography themselves,",
+    "you SHOULD use and summarize the reference entries provided.",
     "End with a simple 'Sources:' section listing the source files.",
     "Keep answers under 200 words and focus on the main points only.",
   ].join(" ");
@@ -25,18 +30,21 @@ function buildSystemPrompt() {
 
 function buildUserPrompt(question, contexts) {
   const sourcesBlock = contexts
-    .map(
-      (c, i) =>
-        `# Source ${i + 1} [${c.source} :: chunk ${c.chunkIndex}]\n${c.text}`
-    )
+    .map((c, i) => {
+      const label = c.isHead
+        ? `# Source ${i + 1} — FRONT MATTER (title / authors / abstract) [${c.source}]`
+        : `# Source ${i + 1} [${c.source} :: chunk ${c.chunkIndex}]`;
+      return `${label}\n${c.text}`;
+    })
     .join("\n\n");
 
   return [
     `Question: ${question}`,
     "\nInstructions:",
+    "- Answer in the same language as the question",
     "- Give a simple, clear answer using only the information below",
-    "- Use plain language without special symbols or complex formatting", 
-    "- If the answer isn't in the documents, say 'The answer to your question was not found in the uploaded documents.'",
+    "- Use plain language without special symbols or complex formatting",
+    "- If the answer isn't in the documents, say so (in the question's language)",
     "- End with 'Sources:' and list the file names",
     "\nSource Information:",
     sourcesBlock,
