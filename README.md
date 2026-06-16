@@ -1,6 +1,6 @@
 # RAG QA — Research Paper Assistant
 
-A Retrieval-Augmented Generation (RAG) app for asking questions about your PDF research papers. Organize documents into folders, run scoped semantic search with two-stage retrieval + cross-encoder reranking, and get grounded answers with cited sources.
+A production-oriented Retrieval-Augmented Generation (RAG) app for asking questions about your PDF research papers. Organize documents into folders, run scoped semantic search with two-stage retrieval + cross-encoder reranking, and get grounded answers with cited sources.
 
 - **Backend:** Node.js / Express (CommonJS) + SQLite (`better-sqlite3`) + OpenAI embeddings + Cohere rerank
 - **Frontend:** React 18 + Vite + Material UI (MUI v6)
@@ -19,6 +19,20 @@ A Retrieval-Augmented Generation (RAG) app for asking questions about your PDF r
 - 🔖 **Save answers** — bookmark good answers into a folder.
 - 📚 **Cited sources** — every answer shows the document, folder, relevance rank and a preview excerpt.
 - 📑 **OpenAPI docs** — Swagger UI at `/docs`.
+
+---
+
+## Screenshots
+
+> Add your own images under `docs/screenshots/` and they'll render here.
+
+| Folders & upload | Ask with cited sources |
+|---|---|
+| ![Folders and upload](docs/screenshots/folders.png) | ![Question and answer](docs/screenshots/answer.png) |
+
+| Search scope selector | Saved answers |
+|---|---|
+| ![Search scope](docs/screenshots/scope.png) | ![Saved answers](docs/screenshots/saved.png) |
 
 ---
 
@@ -90,6 +104,14 @@ The Vite dev server proxies `/api` and `/docs` to the backend on port 5050.
 
 ---
 
+## Design decisions
+
+- **Local JSON vector index** — kept the store as a single `index.json` with in-memory cosine instead of a vector database. It removes an external dependency, keeps setup to `npm install`, and is fast enough for the moderate corpora this app targets.
+- **Two-stage retrieval** — cosine recall is cheap but its ranking is weak. Fetching a wider top-N and reordering with a cross-encoder reranker gives much sharper top-K relevance, while a graceful fallback keeps the app working without a reranker.
+- **Front-matter injection** — pure semantic search struggles with metadata questions (authors, title) because reference lists out-compete the title page. Always injecting each document's first chunk fixes this known RAG weakness with minimal added context.
+
+---
+
 ## API
 
 Base URL: `http://localhost:5050` · Interactive docs: `/docs`
@@ -158,3 +180,11 @@ frontend/
 - The vector store is a local JSON file (`server/data/index.json`) using cosine similarity — simple and dependency-free, suitable for moderate corpora.
 - Chunking: 800 characters with 100-character overlap.
 - `server/data/` (PDFs + index) and `data/app.db` (SQLite) are gitignored, as is `.env`. Never commit API keys.
+
+---
+
+## Roadmap
+
+- [ ] **Deployment** — Dockerfile + `docker-compose` for one-command setup _(planned)_
+- [ ] **Tests** — unit tests (retriever, reranker, scope filter) and integration tests for the API _(planned)_
+- [ ] **CI** — GitHub Actions to run lint, build and tests on every push/PR _(planned)_
