@@ -9,6 +9,8 @@ const pdfParse = require("pdf-parse");
 const dotenv = require("dotenv");
 const OpenAI = require("openai");
 const db = require("./db");
+const { chunkDocument, normalizeConfig } = require("./chunking");
+const vectorStore = require("./vector-store");
 
 dotenv.config();
 
@@ -20,6 +22,7 @@ const EMBED_BATCH_SIZE = parseInt(process.env.EMBED_BATCH_SIZE || "64", 10);
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
+  baseURL: process.env.OPENAI_BASE_URL || undefined,
   timeout: 30000,
 });
 
@@ -67,18 +70,18 @@ async function embedBatch(texts) {
   return res.data.map((d) => d.embedding);
 }
 
-async function processPdfFile(pdfPath, docId, collectionId, documentId) {
+async function processPdfFile(pdfPath, docId, collectionId, documentId, chunkingConfig) {
   const buffer = fs.readFileSync(pdfPath);
   const parsed = await pdfParse(buffer);
   const text = (parsed.text || "").replace(/\s+\n/g, "\n").trim();
 
-  const pieces = chunkText(text, 800, 100);
+  const pieces = chunkDocument(text, chunkingConfig);
   const total = pieces.length;
   const chunkEmbeddings = [];
 
   for (let start = 0; start < total; start += EMBED_BATCH_SIZE) {
     const batch = pieces.slice(start, start + EMBED_BATCH_SIZE);
-    const vectors = await embedBatch(batch);
+    const vectors = await embedBatch(batch.map((piece) => piece.text));
     for (let j = 0; j < batch.length; j++) {
       const i = start + j;
       chunkEmbeddings.push({
@@ -87,9 +90,13 @@ async function processPdfFile(pdfPath, docId, collectionId, documentId) {
         collectionId,
         documentId, // DB documents.id — belge bazlı scope filtresi için
         chunkIndex: i,
-        text: batch[j],
+        text: batch[j].text,
         vector: vectors[j],
         source: path.basename(pdfPath),
+        sectionHeading: batch[j].sectionHeading,
+        contentHash: batch[j].contentHash,
+        chunkingStrategy: chunkingConfig.strategy,
+        embeddingModel: EMBEDDING_MODEL,
       });
     }
     console.log(`  → ${path.basename(pdfPath)}: ${Math.min(start + batch.length, total)}/${total} chunk`);
@@ -105,7 +112,8 @@ async function processPdfFile(pdfPath, docId, collectionId, documentId) {
  * @param {number} collectionId
  * @param {(step:string, progress:number)=>void} [onProgress]
  */
-async function ingestCollection(collectionId, onProgress) {
+async function ingestCollection(collectionId, onProgress, options = {}) {
+  const chunkingConfig = normalizeConfig(options.chunking);
   const dir = collectionDir(collectionId);
   const index = loadIndex();
 
@@ -135,7 +143,7 @@ async function ingestCollection(collectionId, onProgress) {
     const docRow = db.getDocumentByFilename(collectionId, file);
     const documentId = docRow ? docRow.id : null;
 
-    const { chunkEmbeddings } = await processPdfFile(full, docId, collectionId, documentId);
+    const { chunkEmbeddings } = await processPdfFile(full, docId, collectionId, documentId, chunkingConfig);
 
     onProgress?.(
       `Generating embeddings for ${file}...`,
@@ -151,10 +159,13 @@ async function ingestCollection(collectionId, onProgress) {
 
   onProgress?.("Building vector index...", 90);
   writeJSON(INDEX_PATH, index);
+  if (vectorStore.enabled()) {
+    await vectorStore.replaceCollection(collectionId, index.chunks.filter((chunk) => chunk.collectionId === collectionId));
+  }
   onProgress?.("Setting up retrieval system...", 95);
   console.log(`✅ [col ${collectionId}] ${collectionChunks} chunks indexed (total ${index.chunks.length})`);
 
-  return { totalChunks: index.chunks.length, collectionChunks };
+  return { totalChunks: index.chunks.length, collectionChunks, chunking: chunkingConfig };
 }
 
 module.exports = {
@@ -162,4 +173,5 @@ module.exports = {
   collectionDir,
   DATA_DIR,
   INDEX_PATH,
+  chunkText,
 };

@@ -1,0 +1,78 @@
+services:
+  server:
+    build: ./server
+    env_file: ./server/.env
+    environment:
+      PORT: 5050
+      CORS_ORIGIN: http://localhost:8080
+      DATABASE_URL: postgres://rag:rag@postgres:5432/rag
+      REDIS_URL: redis://redis:6379
+    volumes:
+      - app-data:/app/data
+      # db.js resolves the SQLite file to <repo-root>/data (../../data from server/src),
+      # which inside this image lands at /data, one level above /app — not under /app/data.
+      - sqlite-data:/data
+    ports:
+      - "5050:5050"
+    restart: unless-stopped
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: rag
+      POSTGRES_USER: rag
+      POSTGRES_PASSWORD: rag
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rag -d rag"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  worker:
+    build: ./server
+    command: npm run worker
+    env_file: ./server/.env
+    environment:
+      DATABASE_URL: postgres://rag:rag@postgres:5432/rag
+      REDIS_URL: redis://redis:6379
+    volumes:
+      - app-data:/app/data
+      # Same SQLite volume as `server` — both must share one file, since evaluation
+      # and indexing jobs run here but are read back through the server's API.
+      - sqlite-data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    depends_on:
+      - server
+    environment:
+      # server/.env'deki API_KEY ile aynı değer olmalı (set edilirse). Boşsa auth devre dışı kalır.
+      API_KEY: ${API_KEY:-}
+    ports:
+      - "8080:80"
+    restart: unless-stopped
+
+volumes:
+  app-data:
+  sqlite-data:
+  postgres-data:
+  redis-data:

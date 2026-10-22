@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
   Card, CardContent, Stack, TextField, Button, Typography, LinearProgress,
-  Box, Chip, Avatar, Divider, InputAdornment, Skeleton,
+  Box, Chip, Avatar, Divider, InputAdornment, Skeleton, FormControl, InputLabel, Select, MenuItem, Collapse,
 } from '@mui/material';
 import { alpha } from '@mui/material/styles';
 import SendIcon from '@mui/icons-material/Send';
@@ -30,6 +30,9 @@ export default function ChatQA({ collection, collections = [], hasDocuments = fa
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [scope, setScope] = useState({ collectionIds: [], documentIds: [] });
+  const [retrievalMode, setRetrievalMode] = useState('semantic');
+  const [queryTransformation, setQueryTransformation] = useState('none');
+  const [inspector, setInspector] = useState(null);
 
   // Klasör değişince scope'u sıfırla (varsayılan: açık olan klasör)
   useEffect(() => {
@@ -38,7 +41,7 @@ export default function ChatQA({ collection, collections = [], hasDocuments = fa
 
   const onAsk = async () => {
     if (!q.trim() || busy) return;
-    setBusy(true); setAnswer(''); setSources([]); setAsked(true); setSaved(false);
+    setBusy(true); setAnswer(''); setSources([]); setInspector(null); setAsked(true); setSaved(false);
     try {
       // Bir şey seçiliyse scope gönder; değilse null -> backend açık klasörü kullanır
       const hasSelection = scope.collectionIds.length > 0 || scope.documentIds.length > 0;
@@ -46,9 +49,12 @@ export default function ChatQA({ collection, collections = [], hasDocuments = fa
         collectionId: collection?.id ?? null,
         scope: hasSelection ? scope : null,
         topK: 4,
+        retrievalMode,
+        queryTransformation,
       });
       setAnswer(res.answer);
       setSources(res.sources || []);
+      setInspector(res.inspector || null);
     } catch (e) {
       setAnswer('An error occurred while answering. Please try again.');
     } finally {
@@ -97,6 +103,23 @@ export default function ChatQA({ collection, collections = [], hasDocuments = fa
             value={scope}
             onChange={setScope}
           />
+          <FormControl size="small" sx={{ maxWidth: 240 }}>
+            <InputLabel id="retrieval-mode-label">Retrieval mode</InputLabel>
+            <Select labelId="retrieval-mode-label" label="Retrieval mode" value={retrievalMode} onChange={(e) => setRetrievalMode(e.target.value)}>
+              <MenuItem value="semantic">Semantic</MenuItem>
+              <MenuItem value="bm25">Keyword (BM25)</MenuItem>
+              <MenuItem value="hybrid">Hybrid (RRF)</MenuItem>
+            </Select>
+          </FormControl>
+          <FormControl size="small" sx={{ maxWidth: 240 }}>
+            <InputLabel id="query-transform-label">Query transformation</InputLabel>
+            <Select labelId="query-transform-label" label="Query transformation" value={queryTransformation} onChange={(e) => setQueryTransformation(e.target.value)}>
+              <MenuItem value="none">None</MenuItem>
+              <MenuItem value="rewrite">Query rewrite</MenuItem>
+              <MenuItem value="multi_query">Multi-query</MenuItem>
+              <MenuItem value="decompose">Query decomposition</MenuItem>
+            </Select>
+          </FormControl>
 
           {/* Input */}
           <TextField
@@ -185,6 +208,18 @@ export default function ChatQA({ collection, collections = [], hasDocuments = fa
                   <Stack spacing={1.5}>
                     {sources.map((s, i) => <SourceCard key={s.id} source={s} rank={i + 1} />)}
                   </Stack>
+                </Box>
+              )}
+              {inspector && (
+                <Box sx={{ pl: { sm: 6 } }}>
+                  <Typography variant="subtitle2" gutterBottom>Retrieval Inspector</Typography>
+                  <Typography variant="caption" color="text.secondary" display="block">
+                    {inspector.retrievalMode} · retrieval {inspector.retrievalLatencyMs} ms · reranking {inspector.rerankingLatencyMs} ms · answer {inspector.answerLatencyMs} ms
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary" display="block">
+                    Dense: {inspector.dense?.length ?? 0} · BM25: {inspector.bm25?.length ?? 0} · final context: {inspector.finalChunkIds?.length ?? 0}
+                  </Typography>
+                  {inspector.transformedQueries?.length > 0 && <Typography variant="caption" color="text.secondary" display="block">Queries: {inspector.transformedQueries.join(' · ')}</Typography>}
                 </Box>
               )}
             </>

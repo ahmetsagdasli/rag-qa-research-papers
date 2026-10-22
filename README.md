@@ -19,6 +19,9 @@ A production-oriented Retrieval-Augmented Generation (RAG) app for asking questi
 - 🔖 **Save answers** — bookmark good answers into a folder.
 - 📚 **Cited sources** — every answer shows the document, folder, relevance rank and a preview excerpt.
 - 📑 **OpenAPI docs** — Swagger UI at `/docs`.
+- ⚙️ **Background indexing** — uploads return promptly while a visible job tracks embedding progress.
+- 🛡️ **Safe-by-default local API** — upload limits, PDF validation, rate limiting, security headers and safe provider errors.
+- 🐳 **Deployment-ready** — Docker Compose, persistent data volume and CI checks included.
 
 ---
 
@@ -62,6 +65,129 @@ npm run dev
 ```
 The Vite dev server proxies `/api` and `/docs` to the backend on port 5050.
 
+### Docker (recommended for a persistent local deployment)
+
+```bash
+cp server/.env.example server/.env
+# set OPENAI_API_KEY in server/.env
+docker compose up --build
+# → http://localhost:8080
+```
+
+The application data lives in the `app-data` Docker volume. Back it up before
+removing Docker volumes.
+
+With Docker Compose, Redis 7 and a dedicated BullMQ worker process PDF
+indexing jobs. Jobs retry up to three times with exponential backoff beginning
+at two seconds; query `GET /api/jobs/:jobId` for isolated job progress.
+
+### PostgreSQL + pgvector migration
+
+When `DATABASE_URL` is set, PostgreSQL is the primary vector store and the
+local JSON index remains a compatibility fallback. To import existing valid
+1536-dimensional JSON embeddings without paying to re-embed them:
+
+```bash
+cd server
+DATABASE_URL=postgres://rag:rag@localhost:5432/rag npm run migrate:json-index
+```
+
+The migration is transactional per collection and rejects incompatible vector
+dimensions rather than silently storing invalid embeddings.
+
+### Evaluation datasets
+
+Evaluation datasets are newline-delimited JSON (`server/data/evaluations/*.jsonl`).
+Each row requires `question_id`, `question`, and either `relevant_chunk_ids` or
+`relevant_document_ids`; `reference_answer` is optional. Use the validation API
+before saving a dataset: `POST /api/evaluation-datasets/validate`.
+
+## Advanced RAG workflow
+
+### Verification commands
+
+```bash
+# Backend unit and mock-adapter tests
+cd server && npm test
+
+# Frontend component tests and production build
+cd frontend && npm test && npm run build
+
+# Full local stack: frontend, API, worker, PostgreSQL/pgvector, Redis
+cd .. && docker compose up --build
+```
+
+For optional infrastructure integration tests, start the test services and set
+`TEST_DATABASE_URL` and `TEST_REDIS_URL` (examples are in `server/.env.example`).
+
+### Retrieval modes
+
+The chat panel supports three retrieval modes:
+
+- **Semantic** — dense OpenAI embedding similarity.
+- **Keyword (BM25)** — exact terminology and lexical matches.
+- **Hybrid (RRF)** — semantic and BM25 candidates fused with Reciprocal Rank Fusion, then optionally Cohere-reranked.
+
+Use the Retrieval Inspector beneath an answer to review retrieval latency,
+candidate counts, transformed queries and final context selection. Scores from
+different methods are ranking signals, not directly comparable probabilities.
+
+### Query transformation
+
+The default is **None**. Optional modes are Query Rewrite, Multi-Query, and
+Query Decomposition. The original user question remains the answer-generation
+question; transformations are used only for retrieval. If transformation fails,
+the original question is used safely as a fallback.
+
+### Evaluation JSONL format
+
+Store one JSON object per line. `question_id`, `question`, and one relevance
+field are required; `reference_answer` enables answer/faithfulness evaluation.
+
+```jsonl
+{"question_id":"q1","question":"What problem does the paper address?","reference_answer":"It addresses ...","relevant_chunk_ids":["paper::0"]}
+{"question_id":"q2","question":"Which methods were used?","relevant_document_ids":[5]}
+```
+
+Save/validate datasets with `/api/evaluation-datasets`, then start a run with:
+
+```json
+POST /api/evaluations
+{"datasetId":"baseline","retrievalMode":"hybrid","topK":4,"includeFaithfulness":false}
+```
+
+Running a full dataset means one retrieval call (plus an optional LLM
+faithfulness judgment) per question, so evaluations execute as a background
+job — the same pattern used for indexing. The response is `202` with a
+`job`; poll `GET /api/evaluation-jobs/:id` until `status` is `completed`,
+then read the persisted evaluation from `job.result`.
+
+The Evaluation Dashboard records Recall@K, Precision@K, MRR, nDCG, citation
+validity/coverage, latency and optional faithfulness model judgments.
+
+### Reproducibility
+
+Repeat a recorded evaluation with `POST /api/evaluations/:id/repeat`.
+The platform stores pairwise Jaccard similarity, Kendall's tau, standard
+deviation and 1,000-resample bootstrap confidence intervals. LLM output is not
+assumed deterministic.
+
+### Experimental Graph Retrieval
+
+With PostgreSQL configured, rebuild a collection graph with:
+
+```text
+POST /api/graph-retrieval/collections/:id/rebuild
+```
+
+Extraction makes one LLM call per chunk, so this runs as a background job
+(same pattern as indexing and evaluations): the response is `202` with a
+`job`; poll `GET /api/graph-retrieval/jobs/:id` until `status` is
+`completed`, then read `{chunks,nodes,edges}` from `job.result`.
+
+The Experimental Graph Retrieval panel can rebuild and search extracted entity
+and relationship evidence. It remains separate from the standard RAG pipeline.
+
 ---
 
 ## Usage
@@ -90,6 +216,14 @@ The Vite dev server proxies `/api` and `/docs` to the backend on port 5050.
 | `EMBED_BATCH_SIZE` | `64` | Chunks per embedding request during indexing. |
 | `PORT` | `5050` | Backend port. |
 | `CORS_ORIGIN` | `*` | Allowed CORS origin. |
+| `API_KEY` | — | Optional shared-secret auth. If set, every `/api` request must send a matching `X-API-Key` header; unset disables auth (local/single-user default). |
+| `RATE_LIMIT_PER_MINUTE` | `120` | Per-IP request cap on `/api`. Backed by Redis when `REDIS_URL` is set (shared across instances), otherwise an in-memory fallback. |
+
+Uploads accept PDFs up to 25 MB. For public deployments, set `CORS_ORIGIN` to
+the exact frontend origin rather than `*`, and set `API_KEY` to require
+authenticated requests. In Docker Compose, set the same `API_KEY` value in
+the project root `.env` — the `frontend` service's nginx proxy forwards it
+to the backend automatically, so the key never ships to the browser.
 
 > If `COHERE_API_KEY` is missing/placeholder or `USE_RERANKER=false`, retrieval gracefully falls back to single-stage cosine — no errors.
 
@@ -124,7 +258,9 @@ Base URL: `http://localhost:5050` · Interactive docs: `/docs`
 | `DELETE` | `/api/collections/:id` | Delete folder (cascades documents & answers). |
 | `GET` | `/api/collections/:id/documents` | List documents in a folder. |
 | `POST` | `/api/collections/:id/documents` | Upload a PDF (multipart `file`). |
-| `POST` | `/api/collections/:id/reindex` | (Re)build the vector index for a folder. |
+| `POST` | `/api/collections/:id/reindex` | Start/reuse a background index job for a folder. |
+| `GET` | `/api/jobs/:id` | Read background indexing job status. |
+| `DELETE` | `/api/documents/:id` | Delete a document and refresh that folder's index. |
 | `GET` | `/api/documents` | List all documents (optional `?collectionId=`). |
 | `GET` | `/api/progress` | Current indexing progress. |
 | `POST` | `/api/ask` | Ask a question (see below). |
@@ -185,6 +321,7 @@ frontend/
 
 ## Roadmap
 
-- [ ] **Deployment** — Dockerfile + `docker-compose` for one-command setup _(planned)_
-- [ ] **Tests** — unit tests (retriever, reranker, scope filter) and integration tests for the API _(planned)_
-- [ ] **CI** — GitHub Actions to run lint, build and tests on every push/PR _(planned)_
+- [x] **Deployment** — Docker Compose for one-command local deployment.
+- [x] **Tests + CI** — lightweight core tests and GitHub Actions build/test checks.
+- [ ] **OCR** — optional support for image-only/scanned PDFs.
+- [ ] **Accounts and permissions** — only add this when the app becomes multi-user.

@@ -1,0 +1,7 @@
+const crypto=require("crypto"); const fs=require("fs"); const {execFileSync}=require("child_process"); const {INDEX_PATH,loadIndex}=require("./utils");
+function hash(value){return crypto.createHash("sha256").update(value).digest("hex");}
+function gitCommit(){try{return execFileSync("git",["rev-parse","HEAD"],{cwd:require("path").join(__dirname,"..",".."),encoding:"utf8"}).trim();}catch{return null;}}
+function indexMetadata(){const index=loadIndex();const content=fs.existsSync(INDEX_PATH)?fs.readFileSync(INDEX_PATH):Buffer.from("");return {indexHash:hash(content),corpusHash:hash((index.chunks||[]).map(c=>`${c.id}:${c.contentHash||hash(c.text)}`).sort().join("\n")),chunkCount:(index.chunks||[]).length};}
+function estimateCost({inputTokens=0,outputTokens=0,embeddingTokens=0}={}){return {currency:"USD",estimatedUsd:(inputTokens*0.15+outputTokens*0.6+embeddingTokens*0.02)/1000000,assumptions:"Approximate list-price estimate; verify current provider pricing."};}
+function metadata({chunking={}}={}){return {gitCommit:gitCommit(),embeddingModel:process.env.EMBEDDING_MODEL||"text-embedding-3-small",llmModel:process.env.LLM_MODEL||"gpt-4o-mini",rerankerModel:process.env.RERANK_MODEL||"rerank-multilingual-v3.0",chunking:{strategy:chunking.strategy||"fixed",chunkSize:chunking.chunkSize||800,overlap:chunking.overlap||100},...indexMetadata(),tokenUsage:{inputTokens:0,outputTokens:0,embeddingTokens:0},estimatedCost:estimateCost()};}
+module.exports={metadata,estimateCost};

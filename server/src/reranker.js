@@ -5,7 +5,7 @@
 //   adaylar cosine sırasıyla ilk K döndürülür (graceful fallback, hata yok).
 // - Cohere çağrısı hata verirse de aynı fallback uygulanır (throw yok).
 
-const COHERE_URL = "https://api.cohere.com/v2/rerank";
+const COHERE_URL = process.env.COHERE_BASE_URL || "https://api.cohere.com/v2/rerank";
 const RERANK_MODEL = process.env.RERANK_MODEL || "rerank-english-v3.0";
 const REQUEST_TIMEOUT_MS = parseInt(process.env.RERANK_TIMEOUT_MS || "10000", 10);
 

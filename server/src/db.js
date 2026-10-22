@@ -54,9 +54,29 @@ function init() {
     CREATE INDEX IF NOT EXISTS idx_documents_collection ON documents(collection_id);
     CREATE INDEX IF NOT EXISTS idx_answers_collection   ON answers(collection_id);
     CREATE INDEX IF NOT EXISTS idx_answers_document     ON answers(document_id);
+    CREATE TABLE IF NOT EXISTS evaluation_runs (
+      id TEXT PRIMARY KEY, dataset_id TEXT NOT NULL, dataset_version TEXT NOT NULL,
+      config_json TEXT NOT NULL, metrics_json TEXT NOT NULL, status TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_evaluation_runs_dataset ON evaluation_runs(dataset_id, created_at DESC);
+    CREATE TABLE IF NOT EXISTS reproducibility_runs (id TEXT PRIMARY KEY, evaluation_id TEXT NOT NULL, repeats INTEGER NOT NULL, result_json TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')));
   `);
   return db;
 }
+
+function saveEvaluationRun(run) {
+  db.prepare(`INSERT INTO evaluation_runs (id, dataset_id, dataset_version, config_json, metrics_json, status)
+    VALUES (?, ?, ?, ?, ?, ?)`).run(run.id, run.datasetId, run.datasetVersion, JSON.stringify(run.config), JSON.stringify(run.metrics), run.status || "completed");
+  return getEvaluationRun(run.id);
+}
+function getEvaluationRun(id) {
+  const row=db.prepare("SELECT * FROM evaluation_runs WHERE id = ?").get(id); if(!row) return undefined;
+  return { ...row, config: JSON.parse(row.config_json), metrics: JSON.parse(row.metrics_json) };
+}
+function listEvaluationRuns() { return db.prepare("SELECT * FROM evaluation_runs ORDER BY created_at DESC, id DESC").all().map((row)=>({ ...row, config:JSON.parse(row.config_json), metrics:JSON.parse(row.metrics_json) })); }
+function saveReproducibilityRun(run) { db.prepare("INSERT INTO reproducibility_runs (id,evaluation_id,repeats,result_json) VALUES (?,?,?,?)").run(run.id,run.evaluationId,run.repeats,JSON.stringify(run.result)); return { ...run, created_at: new Date().toISOString() }; }
+function listReproducibilityRuns(evaluationId) { return db.prepare("SELECT * FROM reproducibility_runs WHERE evaluation_id=? ORDER BY created_at DESC").all(evaluationId).map((r)=>({...r,result:JSON.parse(r.result_json)})); }
 
 /* ----------------------------- collections ----------------------------- */
 
@@ -146,6 +166,10 @@ function getDocumentByFilename(collectionId, filename) {
   return db
     .prepare("SELECT * FROM documents WHERE collection_id = ? AND filename = ?")
     .get(collectionId, filename);
+}
+
+function getDocument(id) {
+  return db.prepare("SELECT * FROM documents WHERE id = ?").get(id);
 }
 
 /**
@@ -250,9 +274,15 @@ module.exports = {
   // documents
   addDocument,
   listDocuments,
+  getDocument,
   getDocumentByFilename,
   updateDocumentChunks,
   deleteDocument,
+  saveEvaluationRun,
+  getEvaluationRun,
+  listEvaluationRuns,
+  saveReproducibilityRun,
+  listReproducibilityRuns,
   // answers
   saveAnswer,
   listAnswers,

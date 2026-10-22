@@ -4,11 +4,14 @@
 
 const OpenAI = require("openai");
 const { loadIndex, cosineSim, topKScored } = require("./utils");
+const { rankBm25, reciprocalRankFusion } = require("./bm25");
+const vectorStore = require("./vector-store");
 
 const EMBEDDING_MODEL = process.env.EMBEDDING_MODEL || "text-embedding-3-small";
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
+  baseURL: process.env.OPENAI_BASE_URL || undefined,
 });
 
 /**
@@ -51,29 +54,36 @@ function inScope(chunk, scope) {
  * @returns {Promise<Array>}
  */
 async function retrieve(question, k = 4, scope = null) {
+  return (await retrieveWithMode(question, { mode: "semantic", topN: k, scope })).hits;
+}
+
+async function retrieveWithMode(question, { mode = "semantic", topN = 20, scope = null } = {}) {
   const index = loadIndex();
-  if (!index.chunks || index.chunks.length === 0) {
-    return [];
+  if ((!index.chunks || index.chunks.length === 0) && !vectorStore.enabled()) {
+    return { hits: [], inspector: { mode, dense: [], bm25: [], fused: [] } };
   }
 
   // Geriye uyumluluk: scope bir sayıysa eski collectionId davranışı
   const normScope =
     typeof scope === "number" ? { collectionIds: [scope], documentIds: [] } : scope;
 
-  const pool = normScope
-    ? index.chunks.filter((c) => inScope(c, normScope))
-    : index.chunks;
+  const localChunks = index.chunks || [];
+  const localPool = normScope
+    ? localChunks.filter((c) => inScope(c, normScope))
+    : localChunks;
+  const pool = (await vectorStore.listChunks(normScope)) || localPool;
 
-  if (pool.length === 0) return [];
-
-  const qVec = await embed(question);
-
-  const scored = pool.map((c) => ({
-    ...c,
-    score: cosineSim(qVec, c.vector),
-  }));
-
-  return topKScored(scored, k);
+  if (pool.length === 0) return { hits: [], inspector: { mode, dense: [], bm25: [], fused: [] } };
+  let dense = [];
+  if (mode !== "bm25") {
+    const qVec = await embed(question);
+    dense = (await vectorStore.searchDense(qVec, normScope, topN)) || topKScored(pool.map((c) => ({ ...c, score: cosineSim(qVec, c.vector) })), topN)
+      .map((item, index) => ({ ...item, denseRank: index + 1, cosineScore: item.score }));
+  }
+  const bm25 = mode === "semantic" ? [] : rankBm25(question, pool, topN);
+  const fused = mode === "hybrid" ? reciprocalRankFusion([dense, bm25]) : (mode === "bm25" ? bm25 : dense);
+  const hits = fused.slice(0, topN).map((item) => ({ ...item, score: item.rrfScore ?? item.cosineScore ?? item.bm25Score }));
+  return { hits, inspector: { mode, dense, bm25, fused } };
 }
 
 /**
@@ -94,6 +104,8 @@ function getDocumentHeads(documentIds) {
 
 module.exports = {
   retrieve,
+  retrieveWithMode,
+  inScope,
   getDocumentHeads,
   embed, // bazı durumlarda dışarıdan da lazım olabilir
 };

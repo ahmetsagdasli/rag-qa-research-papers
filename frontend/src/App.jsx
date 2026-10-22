@@ -15,7 +15,9 @@ import theme, { tokens } from './theme';
 import UploadArea from './components/UploadArea';
 import ChatQA from './components/ChatQA';
 import SavedAnswers from './components/SavedAnswers';
-import { listCollections, createCollection, deleteCollection, listDocuments, listAnswers } from './api';
+import EvaluationDashboard from './components/EvaluationDashboard';
+import GraphRetrieval from './components/GraphRetrieval';
+import { listCollections, createCollection, deleteCollection, deleteDocument, listDocuments, listAnswers } from './api';
 
 const DRAWER_WIDTH = 320;
 
@@ -62,6 +64,16 @@ export default function App() {
     await deleteCollection(id);
     if (selectedId === id) setSelectedId(null);
     await refreshCollections();
+  };
+
+  const handleDeleteDocument = async (document) => {
+    if (!window.confirm(`Delete “${document.original_name || document.filename}”? This also removes it from the search index.`)) return;
+    try {
+      await deleteDocument(document.id);
+      await Promise.all([refreshSelected(selectedId), refreshCollections()]);
+    } catch (error) {
+      window.alert(error.message || 'Could not delete document.');
+    }
   };
 
   return (
@@ -175,6 +187,12 @@ export default function App() {
                           </Typography>
                           <Typography variant="caption" color="text.secondary">{d.chunk_count} chunks</Typography>
                         </Box>
+                        <Tooltip title="Delete document" arrow>
+                          <IconButton size="small" aria-label={`Delete ${d.original_name || d.filename}`}
+                            onClick={() => handleDeleteDocument(d)} sx={{ ml: 'auto', color: 'text.secondary', '&:hover': { color: 'error.main' } }}>
+                            <DeleteIcon fontSize="small" />
+                          </IconButton>
+                        </Tooltip>
                       </Stack>
                     ))}
                   </Stack>
@@ -238,6 +256,8 @@ export default function App() {
                   onSaved={() => { refreshSelected(selected.id); refreshCollections(); }}
                 />
                 <SavedAnswers answers={answers} />
+                <EvaluationDashboard />
+                <GraphRetrieval collection={selected} />
               </Stack>
             )}
           </Container>

@@ -1,0 +1,11 @@
+server {
+  listen 80;
+  server_name _;
+  client_max_body_size 25m;
+  root /usr/share/nginx/html;
+  index index.html;
+
+  location /api/ { proxy_pass http://server:5050; proxy_set_header Host $host; proxy_set_header X-API-Key "${API_KEY}"; }
+  location /docs/ { proxy_pass http://server:5050; proxy_set_header Host $host; }
+  location / { try_files $uri $uri/ /index.html; }
+}

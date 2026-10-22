@@ -7,6 +7,7 @@ const LLM_MODEL = process.env.LLM_MODEL || "gpt-4o-mini";
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
+  baseURL: process.env.OPENAI_BASE_URL || undefined,
 });
 
 function buildSystemPrompt() {
