@@ -10,6 +10,7 @@
         "worker": "node src/worker.js"
     },
     "dependencies": {
+        "@vercel/blob": "^2.8.2",
         "better-sqlite3": "^12.11.1",
         "bullmq": "^5.81.5",
         "cors": "^2.8.5",

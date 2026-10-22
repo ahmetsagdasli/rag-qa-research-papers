@@ -2,7 +2,9 @@ const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 
-const DATASET_DIR = process.env.EVALUATION_DATASET_DIR || path.join(__dirname, "..", "data", "evaluations");
+// Vercel Functions expose only /tmp as writable scratch space. Datasets are
+// optional in the UI, so an empty store is preferable to a startup 500.
+const DATASET_DIR = process.env.EVALUATION_DATASET_DIR || (process.env.VERCEL ? path.join("/tmp", "rag-evaluations") : path.join(__dirname, "..", "data", "evaluations"));
 const ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/;
 function hash(value) { return crypto.createHash("sha256").update(value).digest("hex"); }
 function ensureDir(dir = DATASET_DIR) { if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true }); return dir; }

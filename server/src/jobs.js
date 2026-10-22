@@ -64,6 +64,13 @@ async function startMemoryJob(collectionId, options) {
   if (active && ["queued", "processing"].includes(active.status)) return active;
   const job = { id: randomUUID(), collectionId, status: "queued", progress: 0, step: "Queued", error: null, chunking: options.chunking };
   memoryJobs.set(job.id, job); memoryActiveIndexJobs.set(collectionId, job.id);
+  if (process.env.VERCEL) {
+    job.status = "processing";
+    try { job.result = await ingestCollection(collectionId, (step, progress) => Object.assign(job, { step, progress }), options); Object.assign(job, { status: "completed", progress: 100, step: "Ready for questions." }); }
+    catch (error) { Object.assign(job, { status: "failed", error }); }
+    finally { memoryActiveIndexJobs.delete(collectionId); }
+    return job;
+  }
   setImmediate(async () => { job.status = "processing"; try { job.result = await ingestCollection(collectionId, (step, progress) => Object.assign(job, { step, progress }), options); Object.assign(job, { status: "completed", progress: 100, step: "Ready for questions." }); } catch (error) { Object.assign(job, { status: "failed", error }); } finally { memoryActiveIndexJobs.delete(collectionId); } });
   return job;
 }

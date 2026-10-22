@@ -1,0 +1,11 @@
+{
+  "name": "rag-qa-research-papers",
+  "private": true,
+  "workspaces": ["frontend", "server"],
+  "scripts": {
+    "build": "npm run build --workspace=rag-qa-frontend"
+  },
+  "optionalDependencies": {
+    "@rollup/rollup-linux-x64-gnu": "4.50.0"
+  }
+}

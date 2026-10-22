@@ -11,10 +11,11 @@ const OpenAI = require("openai");
 const db = require("./db");
 const { chunkDocument, normalizeConfig } = require("./chunking");
 const vectorStore = require("./vector-store");
+const { get } = require("@vercel/blob");
 
 dotenv.config();
 
-const DATA_DIR = path.join(__dirname, "..", "data");
+const DATA_DIR = process.env.VERCEL ? path.join("/tmp", "rag-data") : path.join(__dirname, "..", "data");
 const INDEX_PATH = path.join(DATA_DIR, "index.json");
 
 const EMBEDDING_MODEL = process.env.EMBEDDING_MODEL || "text-embedding-3-small";
@@ -120,7 +121,8 @@ async function ingestCollection(collectionId, onProgress, options = {}) {
   // Bu koleksiyona ait eski chunk'ları çıkar (diğer koleksiyonlar korunur)
   index.chunks = (index.chunks || []).filter((c) => c.collectionId !== collectionId);
 
-  const files = fs.readdirSync(dir).filter((f) => f.toLowerCase().endsWith(".pdf"));
+  const persistedDocs = await db.listDocuments(collectionId);
+  const files = process.env.VERCEL ? persistedDocs.filter((doc) => doc.blob_url).map((doc) => doc.filename) : fs.readdirSync(dir).filter((f) => f.toLowerCase().endsWith(".pdf"));
 
   if (files.length === 0) {
     onProgress?.("No PDF files in this folder", 100);
@@ -133,14 +135,20 @@ async function ingestCollection(collectionId, onProgress, options = {}) {
 
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
-    const full = path.join(dir, file);
+    let full = path.join(dir, file);
     const docId = `${collectionId}_${path.parse(file).name}`;
 
     onProgress?.(`Chunking ${file}...`, Math.round(40 + (i / files.length) * 35));
     console.log(`\n🔎 [col ${collectionId}] Processing: ${file}`);
 
     // DB belge kaydının id'sini al (chunk metadata'sına eklenir)
-    const docRow = db.getDocumentByFilename(collectionId, file);
+    const docRow = await db.getDocumentByFilename(collectionId, file);
+    if (process.env.VERCEL && docRow?.blob_url) {
+      const blob = await get(docRow.blob_url, { access: "public" });
+      if (!blob?.stream) throw new Error(`Could not read stored PDF: ${file}`);
+      full = path.join("/tmp", `rag-${docRow.id}-${file}`);
+      fs.writeFileSync(full, Buffer.from(await new Response(blob.stream).arrayBuffer()));
+    }
     const documentId = docRow ? docRow.id : null;
 
     const { chunkEmbeddings } = await processPdfFile(full, docId, collectionId, documentId, chunkingConfig);
@@ -154,7 +162,7 @@ async function ingestCollection(collectionId, onProgress, options = {}) {
     collectionChunks += chunkEmbeddings.length;
 
     // DB'deki belge kaydının chunk sayısını güncelle
-    db.updateDocumentChunks({ collectionId, filename: file, chunkCount: chunkEmbeddings.length });
+    await db.updateDocumentChunks({ collectionId, filename: file, chunkCount: chunkEmbeddings.length });
   }
 
   onProgress?.("Building vector index...", 90);

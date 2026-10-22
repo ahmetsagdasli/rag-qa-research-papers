@@ -50,7 +50,7 @@ async function runEvaluation(
   };
 
   onProgress("Saving results", 100);
-  return db.saveEvaluationRun({
+  return await db.saveEvaluationRun({
     id: randomUUID(),
     datasetId,
     datasetVersion: dataset.version,

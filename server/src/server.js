@@ -69,6 +69,13 @@ app.use((err, _req, res, _next) => {
   return res.status(500).json({ ok: false, error: 'Unexpected server error.' });
 });
 
-app.listen(PORT, () => {
-  console.log(`🚀 Server http://localhost:${PORT}`);
-});
+// Vercel loads this module as a serverless handler.  Keep the listener only
+// for the standalone local/Docker server; a Function must export the Express
+// application instead of binding its own port.
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`🚀 Server http://localhost:${PORT}`);
+  });
+}
+
+module.exports = app;

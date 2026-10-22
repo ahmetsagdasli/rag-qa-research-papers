@@ -4,7 +4,7 @@
 const fs = require("fs");
 const path = require("path");
 
-const DATA_DIR = path.join(__dirname, "..", "data");
+const DATA_DIR = process.env.VERCEL ? path.join("/tmp", "rag-data") : path.join(__dirname, "..", "data");
 const INDEX_PATH = path.join(DATA_DIR, "index.json");
 
 // Güvenli JSON yükleme

@@ -18,6 +18,7 @@ const { retrieveGraphEvidence } = require("./graph-retrieval");
 const { stability } = require("./reproducibility");
 const vectorStore = require("./vector-store");
 const { randomUUID } = require("crypto");
+const { put, del } = require("@vercel/blob");
 
 const router = express.Router();
 
@@ -103,7 +104,9 @@ function pdfOnly(_req, file, cb) {
   cb(ok ? null : new Error("Only PDF files are accepted."), ok);
 }
 const upload = multer({
-  storage,
+  // Vercel Functions cannot persist files on disk. Keep the request in memory
+  // long enough to write it to the project's private Blob store.
+  storage: process.env.VERCEL ? multer.memoryStorage() : storage,
   fileFilter: pdfOnly,
   limits: { fileSize: 25 * 1024 * 1024, files: 1 },
 });
@@ -111,9 +114,9 @@ const upload = multer({
 /* --------------------------- collections ---------------------------- */
 
 // Klasörleri belge/cevap sayılarıyla listele
-router.get("/collections", (_req, res) => {
+router.get("/collections", async (_req, res) => {
   try {
-    return res.json({ ok: true, collections: db.listCollectionsWithStats() });
+    return res.json({ ok: true, collections: await db.listCollectionsWithStats() });
   } catch (e) {
     console.error("collections list error:", e);
     return res.status(500).json({ ok: false, error: "could not list collections" });
@@ -121,11 +124,11 @@ router.get("/collections", (_req, res) => {
 });
 
 // Yeni klasör oluştur
-router.post("/collections", (req, res) => {
+router.post("/collections", async (req, res) => {
   try {
     const name = (req.body?.name || "").trim();
     if (!name) return res.status(400).json({ ok: false, error: "name is required" });
-    const collection = db.createCollection(name);
+    const collection = await db.createCollection(name);
     return res.json({ ok: true, collection });
   } catch (e) {
     console.error("collection create error:", e);
@@ -134,9 +137,9 @@ router.post("/collections", (req, res) => {
 });
 
 // Klasörü sil
-router.delete("/collections/:id", (req, res) => {
+router.delete("/collections/:id", async (req, res) => {
   try {
-    db.deleteCollection(Number(req.params.id));
+    await db.deleteCollection(Number(req.params.id));
     return res.json({ ok: true });
   } catch (e) {
     console.error("collection delete error:", e);
@@ -147,9 +150,9 @@ router.delete("/collections/:id", (req, res) => {
 /* ---------------------------- documents ----------------------------- */
 
 // Klasördeki belgeleri listele
-router.get("/collections/:id/documents", (req, res) => {
+router.get("/collections/:id/documents", async (req, res) => {
   try {
-    return res.json({ ok: true, documents: db.listDocuments(Number(req.params.id)) });
+    return res.json({ ok: true, documents: await db.listDocuments(Number(req.params.id)) });
   } catch (e) {
     console.error("documents list error:", e);
     return res.status(500).json({ ok: false, error: "could not list documents" });
@@ -158,11 +161,11 @@ router.get("/collections/:id/documents", (req, res) => {
 
 router.delete("/documents/:id", async (req, res) => {
   try {
-    const document = db.getDocument(Number(req.params.id));
+    const document = await db.getDocument(Number(req.params.id));
     if (!document) return res.status(404).json({ ok: false, error: "Document not found" });
-    const filePath = path.join(collectionDir(document.collection_id), document.filename);
-    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-    db.deleteDocument(document.id);
+    if (document.blob_url) await del(document.blob_url);
+    else { const filePath = path.join(collectionDir(document.collection_id), document.filename); if (fs.existsSync(filePath)) fs.unlinkSync(filePath); }
+    await db.deleteDocument(document.id);
     const job = await startIndexJob(document.collection_id);
     return res.status(202).json({ ok: true, job: publicJob(job, publicIndexingError) });
   } catch (e) {
@@ -172,22 +175,30 @@ router.delete("/documents/:id", async (req, res) => {
 });
 
 // Klasöre PDF yükle (kayıt DB'ye eklenir, henüz indekslenmez)
-router.post("/collections/:id/documents", upload.single("file"), (req, res) => {
+router.post("/collections/:id/documents", upload.single("file"), async (req, res) => {
   try {
     const collectionId = Number(req.params.id);
     // Klasör gerçekten var mı? (silinmiş/eski bir klasöre yükleme -> net hata)
-    if (!db.getCollection(collectionId)) {
+    if (!await db.getCollection(collectionId)) {
       return res.status(404).json({
         ok: false,
         error: "Folder not found — it may have been deleted. Please refresh the page.",
       });
     }
     if (!req.file) return res.status(400).json({ ok: false, error: "No file uploaded" });
-    const document = db.addDocument({
+    let blobUrl = null;
+    const filename = process.env.VERCEL ? req.file.originalname.replace(/[^\w.\-]+/g, "_") : req.file.filename;
+    if (process.env.VERCEL) {
+      const safe = filename;
+      const blob = await put(`papers/${collectionId}/${Date.now()}-${safe}`, req.file.buffer, { access: "public", contentType: "application/pdf", addRandomSuffix: true });
+      blobUrl = blob.url;
+    }
+    const document = await db.addDocument({
       collectionId,
-      filename: req.file.filename,
+      filename,
       originalName: req.file.originalname,
       chunkCount: 0,
+      blobUrl,
     });
     return res.json({ ok: true, document });
   } catch (e) {
@@ -200,7 +211,7 @@ router.post("/collections/:id/documents", upload.single("file"), (req, res) => {
 router.post("/collections/:id/reindex", async (req, res) => {
   try {
     const collectionId = Number(req.params.id);
-    if (!db.getCollection(collectionId)) {
+    if (!await db.getCollection(collectionId)) {
       return res.status(404).json({
         ok: false,
         error: "Folder not found — it may have been deleted. Please refresh the page.",
@@ -240,10 +251,10 @@ router.post("/evaluation-datasets", (req, res) => {
   catch (error) { return res.status(400).json({ok:false,error:error.message}); }
 });
 
-router.get("/evaluations", (_req, res) => res.json({ ok: true, evaluations: db.listEvaluationRuns() }));
-router.get("/evaluations/:id", (req, res) => { const evaluation=db.getEvaluationRun(req.params.id); return evaluation ? res.json({ok:true,evaluation}) : res.status(404).json({ok:false,error:"evaluation not found"}); });
-router.get("/evaluations/:id/reproducibility", (req,res)=>res.json({ok:true,runs:db.listReproducibilityRuns(req.params.id)}));
-router.post("/evaluations/:id/repeat", async (req,res)=>{ try { const evaluation=db.getEvaluationRun(req.params.id); if(!evaluation)return res.status(404).json({ok:false,error:"evaluation not found"}); const repeats=Math.min(20,Math.max(2,Number(req.body?.repeats)||3)); const dataset=evaluationDatasets.readDataset(evaluation.dataset_id); if(!dataset?.valid)return res.status(422).json({ok:false,error:"dataset unavailable or invalid"}); const rankings=[]; for(let i=0;i<repeats;i++){const ranking=[];for(const item of dataset.items){const hits=(await retrieveWithMode(item.question,{mode:evaluation.config.retrievalMode,topN:evaluation.config.topK,scope:buildScope({scope:evaluation.config.scope})})).hits;ranking.push(hits.map(h=>h.id).join("|"));}rankings.push(ranking.flatMap(x=>x.split("|").filter(Boolean)));} const result=stability(rankings); const saved=db.saveReproducibilityRun({id:randomUUID(),evaluationId:evaluation.id,repeats,result}); return res.status(201).json({ok:true,reproducibility:saved}); }catch(error){console.error(error);return res.status(500).json({ok:false,error:"reproducibility run failed"});} });
+router.get("/evaluations", async (_req, res) => res.json({ ok: true, evaluations: await db.listEvaluationRuns() }));
+router.get("/evaluations/:id", async (req, res) => { const evaluation=await db.getEvaluationRun(req.params.id); return evaluation ? res.json({ok:true,evaluation}) : res.status(404).json({ok:false,error:"evaluation not found"}); });
+router.get("/evaluations/:id/reproducibility", async (req,res)=>res.json({ok:true,runs:await db.listReproducibilityRuns(req.params.id)}));
+router.post("/evaluations/:id/repeat", async (req,res)=>{ try { const evaluation=await db.getEvaluationRun(req.params.id); if(!evaluation)return res.status(404).json({ok:false,error:"evaluation not found"}); const repeats=Math.min(20,Math.max(2,Number(req.body?.repeats)||3)); const dataset=evaluationDatasets.readDataset(evaluation.dataset_id); if(!dataset?.valid)return res.status(422).json({ok:false,error:"dataset unavailable or invalid"}); const rankings=[]; for(let i=0;i<repeats;i++){const ranking=[];for(const item of dataset.items){const hits=(await retrieveWithMode(item.question,{mode:evaluation.config.retrievalMode,topN:evaluation.config.topK,scope:buildScope({scope:evaluation.config.scope})})).hits;ranking.push(hits.map(h=>h.id).join("|"));}rankings.push(ranking.flatMap(x=>x.split("|").filter(Boolean)));} const result=stability(rankings); const saved=await db.saveReproducibilityRun({id:randomUUID(),evaluationId:evaluation.id,repeats,result}); return res.status(201).json({ok:true,reproducibility:saved}); }catch(error){console.error(error);return res.status(500).json({ok:false,error:"reproducibility run failed"});} });
 // Evaluation bir dataset'teki her soru için retrieval (+opsiyonel LLM faithfulness judgment) çalıştırır;
 // büyük dataset'lerde dakikalar sürebilir, bu yüzden indexing ile aynı async job pattern'i kullanılır.
 router.post("/evaluations", async (req, res) => {
@@ -283,7 +294,8 @@ router.post("/retrieval/search", async (req, res) => {
 router.post("/graph-retrieval/search", async (req, res) => {
   try {
     const { query, collectionId = null, limit = 20 } = req.body || {};
-    if (typeof query !== "string" || !query.trim()) return res.status(400).json({ ok: false, error: "query is required" });
+    // An empty query intentionally returns a graph overview after a rebuild.
+    if (typeof query !== "string") return res.status(400).json({ ok: false, error: "query must be a string" });
     return res.json({ ok: true, experimental: true, evidence: await retrieveGraphEvidence(query, { collectionId, limit }) });
   } catch (error) { return res.status(503).json({ ok: false, error: error.message }); }
 });
@@ -371,7 +383,7 @@ router.post("/ask", async (req, res) => {
     );
 
     // Kaynaklara klasör adını ekle (hangi belge + hangi klasör görünsün)
-    const colMap = new Map(db.listCollections().map((c) => [c.id, c.name]));
+    const colMap = new Map((await db.listCollections()).map((c) => [c.id, c.name]));
 
     // Görüntüde: relevans hit'leri önce, başlık sayfaları sonda
     const sources = [...hits, ...heads].map((h) => ({
@@ -395,10 +407,10 @@ router.post("/ask", async (req, res) => {
 });
 
 // Tüm belgeleri listele (scope seçici için) — opsiyonel ?collectionId filtresi
-router.get("/documents", (req, res) => {
+router.get("/documents", async (req, res) => {
   try {
     const cid = req.query.collectionId != null ? Number(req.query.collectionId) : undefined;
-    return res.json({ ok: true, documents: db.listDocuments(cid) });
+    return res.json({ ok: true, documents: await db.listDocuments(cid) });
   } catch (e) {
     console.error("documents list error:", e);
     return res.status(500).json({ ok: false, error: "could not list documents" });
@@ -408,9 +420,9 @@ router.get("/documents", (req, res) => {
 /* ----------------------------- answers ------------------------------ */
 
 // Kayıtlı cevapları listele (bir klasöre ait)
-router.get("/collections/:id/answers", (req, res) => {
+router.get("/collections/:id/answers", async (req, res) => {
   try {
-    return res.json({ ok: true, answers: db.listAnswers(Number(req.params.id)) });
+    return res.json({ ok: true, answers: await db.listAnswers(Number(req.params.id)) });
   } catch (e) {
     console.error("answers list error:", e);
     return res.status(500).json({ ok: false, error: "could not list answers" });
@@ -418,13 +430,13 @@ router.get("/collections/:id/answers", (req, res) => {
 });
 
 // Bir cevabı klasöre kaydet (frontend'deki "Kaydet" butonu)
-router.post("/answers", (req, res) => {
+router.post("/answers", async (req, res) => {
   try {
     const { collectionId, documentId = null, question, answer: answerText, sources = [] } = req.body || {};
     if (!question || !answerText) {
       return res.status(400).json({ ok: false, error: "question and answer are required" });
     }
-    const saved = db.saveAnswer({
+    const saved = await db.saveAnswer({
       collectionId: collectionId != null ? Number(collectionId) : null,
       documentId: documentId != null ? Number(documentId) : null,
       question,

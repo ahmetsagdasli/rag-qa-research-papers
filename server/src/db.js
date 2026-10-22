@@ -3,6 +3,9 @@
 // Veritabanı dosyası: <proje-kökü>/data/app.db (yoksa otomatik oluşturulur).
 // Bu modül yalnızca altyapıyı sağlar; route'lar bir sonraki adımda bağlanacak.
 
+if (process.env.VERCEL && process.env.DATABASE_URL) {
+  module.exports = require("./postgres-db");
+} else {
 const fs = require("fs");
 const path = require("path");
 const Database = require("better-sqlite3");
@@ -287,3 +290,4 @@ module.exports = {
   saveAnswer,
   listAnswers,
 };
+}
